@@ -65,7 +65,6 @@ from utils.general import (
 )
 from utils.torch_utils import select_device, smart_inference_mode
 
-
 @smart_inference_mode()
 def run(
     weights=ROOT / "yolov5s.pt",  # model path or triton URL
@@ -76,11 +75,11 @@ def run(
     iou_thres=0.45,  # NMS IOU threshold
     max_det=1000,  # maximum detections per image
     device="",  # cuda device, i.e. 0 or 0,1,2,3 or cpu
-    view_img=False,  # show results
-    save_txt=False,  # save results to *.txt
-    save_csv=False,  # save results in CSV format
-    save_conf=False,  # save confidences in --save-txt labels
-    save_crop=False,  # save cropped prediction boxes
+    view_img=True,  # show results
+    save_txt=True,  # save results to *.txt
+    save_csv=True,  # save results in CSV format
+    save_conf=True,  # save confidences in --save-txt labels
+    save_crop=True,  # save cropped prediction boxes
     nosave=False,  # do not save images/videos
     classes=None,  # filter by class: --class 0, or --class 0 2 3
     agnostic_nms=False,  # class-agnostic NMS
@@ -178,7 +177,35 @@ def run(
         dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
     vid_path, vid_writer = [None] * bs, [None] * bs
 
+
+    '''
+        Modify code (YOLO + Deep SVDD(OOD model) + CL(classifier))
+
+        ## Dataset
+            - YOLO에서 대부분 detect를 할 수 있는 dataset으로 구성 
+            - 1s -> 20 frame
+            - class: bmw1(old version), bmw2(new version)
+
+        ## YOLO
+            - epoch 100, train/exp weight 사용
+            - result: exp23
+
+        ## OOD model
+            - bmw1 vs bmw2의 score 값을 비교해보고자 함 
+            - 이 범위를 확인해야 novel이라고 인식할 수 있도록 구분 가능 (임의의 threshold)
+            - ( 구현 전 드는 생각 ) 혹시 구분이 안되면 어쩌지? => 문제가 될 수도 있음
+
+        ## Classifier
+            - replay based CL 사용 (ER)
+            - 요구사항
+                - bmw1가 들어왔을때의 classifier 1개 필요
+                - bmw2가 들어올때의 classifier update가 필요
+            - 확인하고자 하는 것: classifier update 전 후의 정확도 비교
+       
+    '''
     # Run inference
+    frame_idx = 0
+    result = []
     model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
     seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))
     for path, im, im0s, vid_cap, s in dataset:
@@ -214,15 +241,69 @@ def run(
         # Define the path for the CSV file
         csv_path = save_dir / "predictions.csv"
 
-        # Create or append to the CSV file
-        def write_to_csv(image_name, prediction, confidence):
-            """Writes prediction data for an image to a CSV file, appending if the file exists."""
-            data = {"Image Name": image_name, "Prediction": prediction, "Confidence": confidence}
-            with open(csv_path, mode="a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=data.keys())
-                if not csv_path.is_file():
-                    writer.writeheader()
-                writer.writerow(data)
+        '''
+            Deep SVDD
+        '''
+        from dsvdd.car import get_car
+        from dsvdd.train_dsvdd import TrainerDeepSVDD
+        import json
+        from torchvision import transforms
+        from PIL import Image
+        import sys
+        import torch.nn as nn
+        from torchvision import models
+        import dsvdd.visualization as visualization  # 시각화 모듈 가져오기
+        from dsvdd.test import eval  # 테스트 모듈 가져오기
+        from dsvdd.utils.utils import global_contrast_normalization
+        # args
+        args = argparse.Namespace(
+            num_epochs=100, num_epochs_ae=150, patience=50, lr=1e-4,
+            weight_decay=0.5e-6, weight_decay_ae=0.5e-3, lr_ae=1e-4,
+            lr_milestones=[50], batch_size=32, pretrain=True, latent_dim=128,
+            normal_class=0, abnormal_class=1, dataset="car", num_of_classes=2
+        )
+
+        def load_svdd_model(model_path, args):
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            data = get_car(args)
+            deep_SVDD = TrainerDeepSVDD(args, data, device)
+            
+            state_dict = torch.load(model_path)
+            deep_SVDD.net.load_state_dict(state_dict['net_dict'])
+            deep_SVDD.c = torch.Tensor(state_dict['center']).to(device)
+            
+            return deep_SVDD
+        
+        def get_transforms1(args):
+            with open(f'/home/cal-05/hj/0726/yolov5/dsvdd/mydata/min_max/bmw1_min_max.json', 'r') as f:
+                min_max = json.load(f)
+
+            min_val, max_val = min_max[args.normal_class]
+
+            return transforms.Compose([
+                transforms.Resize((128, 128)),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: global_contrast_normalization(x)),
+                transforms.Normalize([min_val] * 3, [max_val - min_val] * 3)
+            ])
+        
+        # load model and transfrom
+        model1_path = '/home/cal-05/hj/0726/yolov5/dsvdd/weights/car/trained_parameters.pth'
+        deep_svdd1 = load_svdd_model(model1_path, args)
+        transform1 = get_transforms1(args)
+
+        '''
+            CL (Classifier)
+        '''
+        # # Create or append to the CSV file
+        # def write_to_csv(image_name, prediction, confidence):
+        #     """Writes prediction data for an image to a CSV file, appending if the file exists."""
+        #     data = {"Image Name": image_name, "Prediction": prediction, "Confidence": confidence}
+        #     with open(csv_path, mode="a", newline="") as f:
+        #         writer = csv.DictWriter(f, fieldnames=data.keys())
+        #         if not csv_path.is_file():
+        #             writer.writeheader()
+        #         writer.writerow(data)
 
         # Process predictions
         for i, det in enumerate(pred):  # per image
@@ -256,8 +337,39 @@ def run(
                     confidence = float(conf)
                     confidence_str = f"{confidence:.2f}"
 
-                    if save_csv:
-                        write_to_csv(p.name, label, confidence_str)
+                    '''
+                        modify this part
+                    '''
+                    # # add OOD + CL
+                    # if names[c] == "car":
+                    #     # image preprocess
+                    #     x1, y1, x2, y2 = map(int, xyxy)
+                    #     car_img = im0[y1:y2, x1:x2]
+                    #     car_img_pil = Image.fromarray(car_img)
+                    #     car1_img = transform1(car_img_pil).unsqueeze(0)  
+
+                        # '''
+                        #     임의의 threshold를 설정하여 Known or Novel 구분 
+                        #         - 현재는 NI일때, OOD & Classifier의 update를 확인하고자 함
+                        # '''
+
+                        # '''
+                        #     OOD
+                        # '''
+                        # # calculate normal score
+                        # scores1 = eval(deep_svdd1.net, deep_svdd1.c, car1_img, device)
+                        # score1 = scores1[0].item()
+
+                        # result.append(score1)
+
+                        # print(f"Frame: {frame_idx}, Image Name: {p.name}, Prediction: {label}, Confidence: {confidence_str}, Score: {score1}")
+
+                        # '''
+                        #     CL (Classifier)
+                        # '''
+
+                    # if save_csv:
+                    #     write_to_csv(p.name, label, confidence_str)
 
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
@@ -271,6 +383,7 @@ def run(
                         annotator.box_label(xyxy, label, color=colors(c, True))
                     if save_crop:
                         save_one_box(xyxy, imc, file=save_dir / "crops" / names[c] / f"{p.stem}.jpg", BGR=True)
+                                
 
             # Stream results
             im0 = annotator.result()
@@ -312,6 +425,8 @@ def run(
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
+
+    print(result)
 
 
 def parse_opt():
