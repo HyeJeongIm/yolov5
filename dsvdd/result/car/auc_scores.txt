@@ -1,0 +1,6 @@
+Normal Class / Abnormal Class : ROC AUC Score
+ 0    /    1 : 100.00%
+Label counts: Counter({0: 124, 1: 111})
+Prediction counts: Counter({1: 147, 0: 88})
+Normal Scores - Min: 1.16, Max: 47.29, Mean: 9.73
+Abnormal Scores - Min: 171.92, Max: 576.48, Mean: 339.70
