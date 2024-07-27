@@ -2,6 +2,10 @@
 
 # YOLO
 mydata
+runs
+
+# DSVDD
+dsvdd/data
 
 # Repo-specific GitIgnore ----------------------------------------------------------------------------------------------
 *.jpg
