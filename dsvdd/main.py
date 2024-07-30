@@ -62,9 +62,9 @@ if __name__ == '__main__':
 
     deep_SVDD = TrainerDeepSVDD(args, data, device)
 
-    if args.pretrain:
-        deep_SVDD.pretrain()
-    deep_SVDD.train()
+    # if args.pretrain:
+    #     deep_SVDD.pretrain()
+    # deep_SVDD.train()
 
     '''
         test and visualization

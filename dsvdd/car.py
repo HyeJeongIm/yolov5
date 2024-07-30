@@ -66,20 +66,22 @@ def calculate_min_max(data_dir, target_class):
 
     return min_val, max_val
     
-def calculate_min_max_for_all_classes(data_dir):
-    num_classes = len(os.listdir(data_dir))
-    min_max_values = {}
+# def calculate_min_max_for_all_classes(data_dir):
+#     num_classes = len(os.listdir(data_dir))
+#     min_max_values = {}
 
-    for class_idx in range(num_classes):
-        min_val, max_val = calculate_min_max(data_dir, class_idx)
-        min_max_values[class_idx] = (min_val, max_val)
-        print(f"Class {class_idx}: min = {min_val}, max = {max_val}")
+#     for class_idx in range(num_classes):
+#         min_val, max_val = calculate_min_max(data_dir, class_idx)
+#         min_max_values[class_idx] = (min_val, max_val)
+#         print(f"Class {class_idx}: min = {min_val}, max = {max_val}")
 
-    return min_max_values
+#     return min_max_values
     
 # Function to get transformations with min-max normalization
-def get_transforms(args, min_max_values):
-    min_val, max_val = min_max_values[args.normal_class]
+def get_transforms(args):
+    with open('/home/cal-05/hj/0726/yolov5/dsvdd/mydata/min_max/bmw1_min_max.json', 'r') as f:
+        min_max = json.load(f)
+    min_val, max_val = min_max[args.normal_class]
 
     return transforms.Compose([
         transforms.Resize((128, 128)),
@@ -90,9 +92,9 @@ def get_transforms(args, min_max_values):
 
 def get_car(args):
     data_dir='/home/cal-05/hj/0726/yolov5/dsvdd/mydata'
-    min_max_values = calculate_min_max_for_all_classes(os.path.join(data_dir,'train'))
+    # min_max_values = calculate_min_max_for_all_classes(os.path.join(data_dir,'train'))
 
-    transform = get_transforms(args, min_max_values)
+    transform = get_transforms(args)
 
     train_dataset = CarDataset(
         root=os.path.join(data_dir, 'train'),
