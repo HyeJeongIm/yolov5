@@ -98,7 +98,7 @@ def distribution_normal(normal_scores, result_dir):
     plt.ylabel('Density')
     plt.legend()
     plt.grid(True)
-    plt.savefig(f'{result_dir}/normal_score_distribution.png')
+    plt.savefig(f'{result_dir}/01. normal_score_distribution.png')
     plt.close()
 
 def distribution_abnormal(abnormal_scores, result_dir):
@@ -122,7 +122,7 @@ def distribution_abnormal(abnormal_scores, result_dir):
     plt.ylabel('Density')
     plt.legend()
     plt.grid(True)
-    plt.savefig(f'{result_dir}/abnormal_score_distribution.png')
+    plt.savefig(f'{result_dir}/02. abnormal_score_distribution.png')
     plt.close()
 
 def distribution_comparison(normal_scores, abnormal_scores, result_dir):
@@ -145,6 +145,6 @@ def distribution_comparison(normal_scores, abnormal_scores, result_dir):
     plt.ylabel('Density')
     plt.legend()
     plt.grid(True)
-    plt.savefig(f'{result_dir}/score_distribution_comparison.png')
+    plt.savefig(f'{result_dir}/03. score_distribution_comparison.png')
     plt.close()
 

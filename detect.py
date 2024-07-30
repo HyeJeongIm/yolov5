@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 
 import torch
-
+import ipdb
 FILE = Path(__file__).resolve()
 ROOT = FILE.parents[0]  # YOLOv5 root directory
 if str(ROOT) not in sys.path:
@@ -205,7 +205,10 @@ def run(
     '''
     # Run inference
     frame_idx = 0
-    result = []
+    score_normal = []
+    score_abnormal = []
+    novel_image_buffer = []
+
     model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
     seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))
     for path, im, im0s, vid_cap, s in dataset:
@@ -252,16 +255,9 @@ def run(
         import sys
         import torch.nn as nn
         from torchvision import models
-        import dsvdd.visualization as visualization  # 시각화 모듈 가져오기
-        from dsvdd.test import eval  # 테스트 모듈 가져오기
+        import dsvdd.visualization as visualization  
+        from test_dsvdd import eval 
         from dsvdd.utils.utils import global_contrast_normalization
-        # args
-        args = argparse.Namespace(
-            num_epochs=100, num_epochs_ae=150, patience=50, lr=1e-4,
-            weight_decay=0.5e-6, weight_decay_ae=0.5e-3, lr_ae=1e-4,
-            lr_milestones=[50], batch_size=32, pretrain=True, latent_dim=128,
-            normal_class=0, abnormal_class=1, dataset="car", num_of_classes=2
-        )
 
         def load_svdd_model(model_path, args):
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -287,6 +283,86 @@ def run(
                 transforms.Normalize([min_val] * 3, [max_val - min_val] * 3)
             ])
         
+        def get_prediction_from_scores(model_scores):
+            min_score = min(model_scores)
+            class_idx = model_scores.index(min_score)
+            # class_map = {0: 'car_v1', 1: 'car_v2', 2: 'car_v3'}
+            class_map = {0: 'BMW'}
+
+            return class_map[class_idx]
+        
+        def write_to_csv(image_name, prediction, confidence, model_scores):
+            """Writes prediction data for an image to a CSV file, appending if the file exists."""
+            prediction = get_prediction_from_scores(model_scores)
+            data = {
+                "Image Name": image_name,
+                "Prediction": prediction,
+                "Confidence": confidence,
+                "Model1 Score": model_scores[0],
+            }
+
+            file_exists = os.path.isfile(csv_path)  # 파일 존재 여부 확인
+
+            with open(csv_path, mode="a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=data.keys())
+                if not file_exists:  # 파일이 없을 때만 헤더 작성
+                    writer.writeheader()
+                writer.writerow(data)
+
+        import torch.optim as optim
+        import torch.nn as nn
+
+        def fine_tune_ood_model(net, c, novel_images, args):
+            """
+            Novel 이미지를 사용하여 OOD 모델을 fine-tuning
+
+            Args:
+                net: Deep SVDD 모델의 네트워크 부분.
+                c: 중심점 텐서.
+                novel_images: Novel 이미지 리스트 (텐서 형태).
+            """
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            net.train()
+            optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+            scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.lr_milestones, gamma=0.1)
+            
+            # 텐서 리스트를 튜플로 변환 후 하나의 텐서로 스택
+            # ipdb.set_trace()
+
+            novel_images = torch.stack(novel_images)  # torch.Size([20, 3, 128, 128])
+
+            novel_dataset = torch.utils.data.TensorDataset(novel_images)
+            novel_loader = torch.utils.data.DataLoader(novel_dataset, batch_size=args.batch_size, shuffle=True)
+    
+            
+            for epoch in range(args.num_epochs):
+                total_loss = 0
+                for batch in novel_loader:
+                    inputs = batch[0].to(device)
+                    optimizer.zero_grad()
+                    outputs = net(inputs)
+                    loss = torch.mean(torch.sum((outputs - c) ** 2, dim=1))
+                    loss.requires_grad_(True)
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                scheduler.step()
+
+                avg_train_loss = total_loss / len(novel_loader)
+                print(f"Fine-tuning Epoch [{epoch+1}/{args.num_epochs}], Loss: {avg_train_loss:.4f}")
+            
+            torch.save({
+                'net_dict': net.state_dict(),
+                'center': c.cpu().numpy().tolist()
+            }, 'updated_svdd_model.pth')
+
+        # args
+        args = argparse.Namespace(
+            num_epochs=100, num_epochs_ae=1, patience=50, lr=1e-2,
+            weight_decay=0.5e-6, weight_decay_ae=0.5e-3, lr_ae=1e-4,
+            lr_milestones=[50], batch_size=5, pretrain=True, latent_dim=128,
+            normal_class=0, abnormal_class=1, dataset="car", num_of_classes=2
+        )
         # load model and transfrom
         model1_path = '/home/cal-05/hj/0726/yolov5/dsvdd/weights/car/trained_parameters.pth'
         deep_svdd1 = load_svdd_model(model1_path, args)
@@ -336,41 +412,67 @@ def run(
                     label = names[c] if hide_conf else f"{names[c]}"
                     confidence = float(conf)
                     confidence_str = f"{confidence:.2f}"
-
+                    
                     '''
                         modify this part
                     '''
+
                     # # add OOD + CL
-                    # if names[c] == "car":
-                    #     # image preprocess
-                    #     x1, y1, x2, y2 = map(int, xyxy)
-                    #     car_img = im0[y1:y2, x1:x2]
-                    #     car_img_pil = Image.fromarray(car_img)
-                    #     car1_img = transform1(car_img_pil).unsqueeze(0)  
+                    if names[c] == "car":
+                        # image preprocess
+                        x1, y1, x2, y2 = map(int, xyxy)
+                        car_img = im0[y1:y2, x1:x2]
+                        car_img_pil = Image.fromarray(car_img)
+                        car1_img = transform1(car_img_pil).unsqueeze(0)  # torch.Size([1, 3, 128, 128])
 
-                        # '''
-                        #     임의의 threshold를 설정하여 Known or Novel 구분 
-                        #         - 현재는 NI일때, OOD & Classifier의 update를 확인하고자 함
-                        # '''
+                        '''
+                            임의의 threshold를 설정하여 Known or Novel 구분 
+                                - 현재는 NI일때, OOD & Classifier의 update를 확인하고자 함
+                        '''
+                        
+                        # calculate normal score
+                        scores1 = eval(deep_svdd1.net, deep_svdd1.c, car1_img, device)
+                        score1 = scores1[0]
 
-                        # '''
-                        #     OOD
-                        # '''
-                        # # calculate normal score
-                        # scores1 = eval(deep_svdd1.net, deep_svdd1.c, car1_img, device)
-                        # score1 = scores1[0].item()
+                        # 임의의 threshold
+                        threshold = 109
+                        '''
+                            Novel
+                        '''
+                        if score1 > threshold:
+                            prediction = "Novel"
+                            score_abnormal.append(score1)
+                            novel_image_buffer.append(car1_img.squeeze(0))  # torch.Size([3, 128, 128])
+                            print("Novel detected with score:", score1)
 
-                        # result.append(score1)
+                            if len(novel_image_buffer) >= 20:
+                                pass
+
+                                '''
+                                    OOD
+                                '''
+                                # print("Starting fine-tuning of OOD model with novel images.")
+                                # fine_tune_ood_model(deep_svdd1.net, deep_svdd1.c, novel_image_buffer, args)
+                                # novel_image_buffer = []
+
+                                '''
+                                    CL (Classifier)
+                                '''
+
+                        else:
+                            prediction = "Known"
+                            score_normal.append(score1)
+                            print("Known detected with score:", score1)
 
                         # print(f"Frame: {frame_idx}, Image Name: {p.name}, Prediction: {label}, Confidence: {confidence_str}, Score: {score1}")
 
-                        # '''
-                        #     CL (Classifier)
-                        # '''
+                        '''
+                            CL (Classifier)
+                        '''
 
                     # if save_csv:
                     #     write_to_csv(p.name, label, confidence_str)
-
+                    label = None if hide_labels else (prediction if hide_conf else f"{prediction} {confidence:.2f}")
                     if save_txt:  # Write to file
                         xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
                         line = (cls, *xywh, conf) if save_conf else (cls, *xywh)  # label format
@@ -379,7 +481,10 @@ def run(
 
                     if save_img or save_crop or view_img:  # Add bbox to image
                         c = int(cls)  # integer class
-                        label = None if hide_labels else (names[c] if hide_conf else f"{names[c]} {conf:.2f}")
+                        ## custom label
+                        label = None if hide_labels else (prediction if hide_conf else f"{prediction} {conf:.2f}")
+                        # label = None if hide_labels else (names[c] if hide_conf else f"{names[c]} {conf:.2f}")
+
                         annotator.box_label(xyxy, label, color=colors(c, True))
                     if save_crop:
                         save_one_box(xyxy, imc, file=save_dir / "crops" / names[c] / f"{p.stem}.jpg", BGR=True)
@@ -425,8 +530,14 @@ def run(
         LOGGER.info(f"Results saved to {colorstr('bold', save_dir)}{s}")
     if update:
         strip_optimizer(weights[0])  # update model (to fix SourceChangeWarning)
+    
+    from dsvdd import visualization
 
-    print(result)
+    # Visualize and save score lists to images
+    result_dir = str(save_dir)
+    visualization.distribution_normal(score_normal, result_dir)
+    visualization.distribution_abnormal(score_abnormal, result_dir)
+    visualization.distribution_comparison(score_normal, score_abnormal, result_dir)
 
 
 def parse_opt():

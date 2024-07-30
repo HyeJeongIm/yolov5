@@ -5,8 +5,8 @@ import torch.nn.functional as F
 import numpy as np
 from barbar import Bar
 
-from model import autoencoder, network, ContrastiveModel
-from utils.utils import weights_init_normal
+from dsvdd.model import autoencoder, network
+from dsvdd.utils.utils import weights_init_normal
 import os
 import torch.nn as nn
 
